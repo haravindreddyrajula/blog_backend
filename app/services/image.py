@@ -1,4 +1,3 @@
-
 import logging
 from pathlib import Path
 import uuid
@@ -18,12 +17,11 @@ async def upload_image(file: UploadFile = File(...)):
         allowed_extensions = {"jpg", "jpeg", "png", "webp"}
         file_ext = file.filename.split(".")[-1].lower()
         if file_ext not in allowed_extensions:
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail="Invalid file type. Only JPG, PNG, and WEBP are allowed."
-            )
+            logger.error(f"Image file extension: {file_ext}, not supported")
+            raise HTTPException( status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid file type. Only JPG, PNG, and WEBP are allowed.")
         
         if file.size > MAX_FILE_SIZE:
+            logger.error(f"Image: {file.filename}, has exceeded allowed file size of 5MB")
             raise HTTPException(status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE, detail="File too large")
 
         # Generate secure filename
@@ -44,7 +42,6 @@ async def upload_image(file: UploadFile = File(...)):
     except HTTPException:
         raise
     except Exception as e:
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Failed to upload image: {str(e)}"
-        )
+        logger.error(f"Unable to save the Image: {file.filename}")
+        raise HTTPException( status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"Failed to upload image: {str(e)}")
+    
