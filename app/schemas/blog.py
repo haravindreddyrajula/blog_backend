@@ -15,7 +15,7 @@ class BlogBase(BaseModel):
     is_public: bool = True
     is_featured: bool = False 
     # tags: Optional[list[str]] = None
-    tags: str = None
+    tags: Optional[str] = None
 
 class BlogCreate(BlogBase):
     pass
@@ -26,7 +26,6 @@ class BlogUpdate(BlogBase):
     status: Optional[BlogStatus] = None
     is_public: Optional[bool] = None
     is_featured: Optional[bool] = None  
-    tags: Optional[str] = None
 
 class BlogOut(BlogBase):
     model_config = ConfigDict(from_attributes=True) 
