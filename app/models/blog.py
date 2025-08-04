@@ -10,8 +10,10 @@ class Blog(Base):
 
     id = Column(Integer, primary_key=True, index=True)
     title = Column(String, nullable=False, index=True)
+    excerpt = Column(String)
     content = Column(Text, nullable=False)
     status = Column(SQLEnum(BlogStatus), default=BlogStatus.DRAFT)
+    views = Column(Integer,default=0)
     cover_image_url = Column(String, nullable=True)
     is_public = Column(Boolean, default=True)
     is_featured = Column(Boolean, default=False)
