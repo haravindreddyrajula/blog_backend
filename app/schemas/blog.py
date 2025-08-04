@@ -22,10 +22,11 @@ class BlogCreate(BlogBase):
 
 class BlogUpdate(BlogBase):
     title: Optional[str] = None
+    excerpt: Optional[str] = None
     content: Optional[str] = None
     status: Optional[BlogStatus] = None
     is_public: Optional[bool] = None
-    is_featured: Optional[bool] = None  
+    is_featured: Optional[bool] = None 
 
 class BlogOut(BlogBase):
     model_config = ConfigDict(from_attributes=True) 

@@ -197,7 +197,9 @@ async def get_dashboard_blogs(db: Annotated[AsyncSession, Depends(get_async_db)]
             ) from e
 
 @router.get("/{blog_id}", response_model=BlogOut, status_code=status.HTTP_200_OK)
-async def get_blog(blog_id: int, db: Annotated[AsyncSession, Depends(get_async_db)]) -> BlogOut:
+async def get_blog(blog_id: int, 
+                   db: Annotated[AsyncSession, Depends(get_async_db)],
+                   current_user: Annotated[User, Depends(get_current_active_user)]) -> BlogOut:
     """
     Retrieve a single blog post by ID.
     
@@ -228,6 +230,12 @@ async def get_blog(blog_id: int, db: Annotated[AsyncSession, Depends(get_async_d
                 logger.warning(f"Blog not found - ID: {blog_id}")
                 raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=f"Blog with ID {blog_id} not found")
             
+            #Increment views when viewer is not an admin
+            if current_user.id != Blog.author_id:
+                Blog.views = Blog.views + 1
+                session.add(Blog)
+                await session.commit()
+
             logger.debug(f"Successfully retrieved blog ID: {blog_id}")
 
             # Convert SQLAlchemy model to Pydantic model more elegantly
@@ -238,6 +246,7 @@ async def get_blog(blog_id: int, db: Annotated[AsyncSession, Depends(get_async_d
         except Exception as e:
             logger.error( f"Failed to fetch blog ID {blog_id}. Error: {str(e)}", exc_info=True)
             raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"Failed to retrieve blog: {str(e)}") from e
+
 
 @router.put("/{blog_id}", response_model=BlogOut)
 async def update_blog(blog_id: int, blog_update: BlogUpdate, 
