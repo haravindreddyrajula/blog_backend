@@ -159,13 +159,13 @@ async def get_all_blogs(
             ) from e
 
 @router.get("/dashboard", response_model=list[BlogOut], status_code=status.HTTP_200_OK, dependencies=[Security(get_current_active_user)])     
-async def get_dashboard_blogs(db: Annotated[AsyncSession, Depends(get_async_db)]):
+async def get_dashboard_blogs(status: str, db: Annotated[AsyncSession, Depends(get_async_db)]):
     async with db as session:
         try:
             query = (
                 select(Blog)
                 .where(
-                    Blog.status == BlogStatus.DRAFT
+                    Blog.status == status
                 )
                 .order_by(Blog.created_at.desc())
             )
@@ -184,17 +184,14 @@ async def get_dashboard_blogs(db: Annotated[AsyncSession, Depends(get_async_db)]
                     detail="Database operation timed out"
                 )
             
-            logger.info(f"Fetched {len(blogs)} draft blogs for dashboard")
+            logger.info(f"Fetched {len(blogs)} {status} blogs for dashboard")
 
             # Convert to Pydantic models using model_validate
             return [BlogOut.model_validate(blog) for blog in blogs]
         
         except Exception as e:
             logger.error(f"Failed to fetch blogs: {str(e)}")
-            raise HTTPException(
-                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                detail="Failed to fetch blogs"
-            ) from e
+            raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Failed to fetch blogs") from e
 
 @router.get("/{blog_id}", response_model=BlogOut, status_code=status.HTTP_200_OK)
 async def get_blog(blog_id: int, db: Annotated[AsyncSession, Depends(get_async_db)]) -> BlogOut:
