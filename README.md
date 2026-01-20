@@ -38,42 +38,34 @@ This is a private blog application built with modern web technologies, designed 
 
 ### Key Benefits
 
-- âš¡ **High Performance**: Built on FastAPI for maximum speed
-- ðŸ”’ **Secure**: JWT authentication and input validation
-- ðŸ“š **Well Documented**: Automatic API documentation
-- ðŸ§ª **Tested**: Comprehensive test suite
-- ðŸ³ **Docker Ready**: Containerized for easy deployment
+- **High Performance**: Built on FastAPI for maximum speed
+- **Secure**: JWT authentication and input validation
+- **Well Documented**: Automatic API documentation
+- **Tested**: Comprehensive test suite
+- **Docker Ready**: Containerized for easy deployment
 
 ## Features
 
 ### Core Features
-- âœ… User registration and authentication - (currently Just admin)
-- âœ… CRUD operations for blog posts - Done
-- âœ… Comment system - Dev done
-- âœ… Category/Tag management
-- âœ… Search functionality - Dev done
-- âœ… User profile management
+- ✅ User registration and authentication - (currently Just admin)
+- ✅ CRUD operations for blog posts
+- ✅ Comment system
+- ❌ Category/Tag management
+- ❌ Search functionality
+- ❌ User profile management
 
 ### Advanced Features
-- âœ… Rate limiting
-- âœ… Input validation and sanitization
-- âœ… Automated database migrations
-- âœ… Comprehensive logging
-- âœ… Health check endpoints - just health done
-- âœ… CORS configuration - Done
+- ❌ Rate limiting
+- ❌ Input validation and sanitization
+- ❌ Automated database migrations
+- ❌ Comprehensive logging
+- ❌ Health check endpoints - just health done
+- ❌ CORS configuration
 
 ## Architecture
 
 ```
-â”Œâ”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”    â”Œâ”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”    â”Œâ”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”
-â”‚   Frontend      â”‚â”€â”€â”€â”€â”‚   FastAPI       â”‚â”€â”€â”€â”€â”‚   Database      â”‚
-â”‚   (Optional)    â”‚    â”‚   Backend       â”‚    â”‚   (SQLite)      â”‚
-â””â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”˜    â””â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”˜    â””â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”˜
-                              â”‚
-                       â”Œâ”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”
-                       â”‚   External      â”‚
-                       â”‚   Services      â”‚
-                       â””â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”˜
+
 ```
 
 ## Prerequisites
@@ -178,7 +170,7 @@ JWT_ALGORITHM=HS256
 # DATABASE_URL = f"postgresql+asyncpg://{os.getenv('DB_USER')}:{os.getenv('DB_PASSWORD')}@{os.getenv('DB_HOST')}:{os.getenv('DB_PORT')}/{os.getenv('DB_NAME')}"
 ```
 
-### 5. Database Setup - in roadmap for prod
+### 5. Database Setup - Skip this step
 
 **Initialize Database:**
 ```bash
@@ -198,7 +190,7 @@ python scripts/seed_data.py
 
 Run the application:
 ```bash
-uvicorn main:app --reload --host 0.0.0.0 --port 8000
+uvicorn app.main:app --reload --host 0.0.0.0 --port 8000
 ```
 
 Visit these URLs to verify:
@@ -223,6 +215,7 @@ Visit these URLs to verify:
 
 **SQLite (Development):**
 ```env
+Go to the project root, you find blog.db folder
 DATABASE_URL=sqlite:///./blog.db
 ```
 
@@ -237,15 +230,15 @@ DATABASE_URL=postgresql://username:password@localhost:5432/blog_db
 
 **Development Mode:**
 ```bash
-uvicorn main:app --reload --host 0.0.0.0 --port 8000
+uvicorn app.main:app --reload --host 0.0.0.0 --port 8000
 ```
 
 **Production Mode:**
 ```bash
-uvicorn main:app --host 0.0.0.0 --port 8000 --workers 4
+uvicorn app.main:app --host 0.0.0.0 --port 8000 --workers 4
 ```
 
-### Using Docker - in roadmap
+### Using Docker - skip it
 
 **Build Image:**
 ```bash
@@ -303,7 +296,7 @@ curl -X POST "http://localhost:8000/api/v1/blogs/" \
 }'
 ```
 
-## Testing - in roadmap
+## Testing - skip
 
 ### Running Tests
 
@@ -552,6 +545,6 @@ This project uses several third-party packages. See [THIRD_PARTY_LICENSES.md](TH
 
 ---
 
-**Made with â¤ï¸ by [Weekend Dev]**
+**Made with :heart:¸ by [Weekend Dev]**
 
 For more information, visit our [documentation](https://your-docs-site.com) or contact us at [support@yourcompany.com](mailto:support@yourcompany.com).
