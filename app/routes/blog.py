@@ -1,7 +1,11 @@
 """
-Production-Ready Blog Router
+Blog Router
 
 A secure, well-architected blog CRUD API with:
+
+- SEO field support (slug, meta_description, meta_keywords, og_image)
+- Engagement tracking (view_count, reading_time_minutes)
+- Auto-generation of slugs and reading times
 - Proper transaction management (no nested contexts)
 - Authorization checks on all endpoints
 - Input validation and sanitization
@@ -10,10 +14,6 @@ A secure, well-architected blog CRUD API with:
 - Database constraints for data integrity
 - Idempotency support
 - Performance optimizations (eager loading, pagination)
-
-Author: Production Code Review
-Status: Ready for Production Deployment
-Last Updated: 2025-01-16
 """
 
 import asyncio
@@ -21,7 +21,7 @@ import hashlib
 import logging
 from typing import Annotated, Optional
 from contextlib import suppress
-
+from datetime import datetime, timezone
 from fastapi import (
     APIRouter,
     Depends,
@@ -32,17 +32,17 @@ from fastapi import (
     status,
 )
 from pydantic import constr
-from sqlalchemy import ARRAY, or_, select, update
+from sqlalchemy import ARRAY, or_, select, update, func
 from sqlalchemy.exc import SQLAlchemyError, IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
-
+from slugify import slugify
 from app.core.config import settings
 from app.core.deps import get_async_db
 from app.models.blog import Blog, BlogStatus
 from app.models.comment import Comment
 from app.models.user import User
-from app.schemas.blog import BlogCreate, BlogOut, BlogUpdate
+from app.schemas.blog import BlogCreate, BlogOut, BlogUpdate, BlogListOut, BlogStatus as SchemaStatus
 from app.services.user import get_current_active_user
 
 # Configure logger
@@ -57,16 +57,12 @@ MAX_SEARCH_LENGTH = 100
 QUERY_TIMEOUT = 10.0
 HASH_SEED = "blog_event"  # For non-security hashing
 
-
 # ============================================================================
 # UTILITY FUNCTIONS
 # ============================================================================
-
-
 def _hash_user_id(user_id: int) -> str:
     """Hash user ID for safe logging (non-security)."""
     return hashlib.sha256(f"{HASH_SEED}:{user_id}".encode()).hexdigest()[:8]
-
 
 def _sanitize_search_query(search: str) -> str:
     """Sanitize and truncate search query."""
@@ -76,6 +72,24 @@ def _sanitize_search_query(search: str) -> str:
     safe = " ".join(search.split())[:MAX_SEARCH_LENGTH]
     return safe
 
+def _calculate_reading_time(content: str) -> int:
+
+    """
+    Calculate reading time in minutes.
+    Average reading speed: 200 words per minute
+    """
+
+    word_count = len(content.split())
+    reading_time = max(1, word_count // 200)
+    return reading_time
+
+def _generate_slug(title: str) -> str:
+
+    """
+    Generate URL-friendly slug from title.
+    Example: "How to Learn Python" -> "how-to-learn-python"
+    """
+    return slugify(title)
 
 async def _get_blog_or_404(
     db: AsyncSession, blog_id: int, include_relations: bool = False
@@ -114,8 +128,45 @@ async def _get_blog_or_404(
             detail="Blog not found",
         )
 
+    logger.info(
+        "Blog fetched successfully",
+        extra={"blog_id": blog.id, "request_type": "read"},
+    )
+
     return blog
 
+async def _get_blog_by_slug(db: AsyncSession, slug: str) -> Blog:
+
+    """
+    Fetch a blog by slug (for public viewing).
+
+    Args:
+        db: Database session
+        slug: Blog slug
+
+    Returns:
+        Blog object
+
+    Raises:
+        HTTPException: 404 if not found
+    """
+
+    query = select(Blog).where(Blog.slug == slug)
+    result = await db.execute(query)
+    blog = result.scalar_one_or_none()
+
+    if not blog:
+        logger.warning(
+            "Blog not found by slug",
+            extra={"slug": slug, "request_type": "read"},
+        )
+
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Blog not found",
+        )
+
+    return blog
 
 def _check_authorization(blog: Blog, user: User, operation: str) -> None:
     """
@@ -145,7 +196,6 @@ def _check_authorization(blog: Blog, user: User, operation: str) -> None:
             detail="Not authorized to modify this blog",
         )
 
-
 # ============================================================================
 # ENDPOINTS
 # ============================================================================
@@ -170,31 +220,27 @@ async def create_blog(
     current_user: Annotated[User, Depends(get_current_active_user)],
 ) -> BlogOut:
     """
-    Create a new blog post.
+    Create a new blog post with auto-generated SEO fields.
+    The current authenticated user becomes the author.
 
-    The current authenticated user becomes the author. Title must be unique
-    across all blogs.
+    **Auto-Generated Fields:**
+    - slug: Generated from title (can be overridden)
+    - reading_time_minutes: Calculated from content word count
+    - meta_description: Uses excerpt if not provided
+    - published_at: Set when status=PUBLISHED
 
     **Required Fields:**
-    - title: Blog title (unique)
-    - content: Blog content
+    - title: Blog title (5-255 chars)
+    - content: Blog content (10+ chars)
 
     **Optional Fields:**
-    - description: Short description
-    - is_public: Public visibility (default: False)
-    - is_featured: Featured flag (default: False)
+    - excerpt: Short summary
+    - slug: URL identifier (auto-generated if not provided)
+    - meta_description: Google search snippet (155-160 chars)
+    - meta_keywords: Search keywords (comma-separated)
+    - og_image: Social sharing image
     - status: Draft or Published (default: DRAFT)
-    - tags: List of tags
-
-    **Example Request:**
-    ```json
-    {
-        "title": "My First Blog",
-        "content": "Blog content here...",
-        "description": "A short description",
-        "tags": ["python", "fastapi"]
-    }
-    ```
+    - tags: Comma-separated tags
 
     **Returns:**
     - 201: Created blog with all fields including auto-generated ID, timestamps
@@ -212,9 +258,32 @@ async def create_blog(
             },
         )
 
-        # Create new blog (title uniqueness enforced by database constraint)
+        # Auto-generate slug if not provided
+        slug = blog_data.slug or _generate_slug(blog_data.title)
+
+        # Calculate reading time
+        reading_time = _calculate_reading_time(blog_data.content)
+
+        # Set excerpt if not provided (use content preview)
+        excerpt = blog_data.excerpt or blog_data.content[:500]
+
+        # Set meta_description if not provided
+        meta_description = blog_data.meta_description or excerpt[:160]
+
+        # Set published_at if publishing
+        published_at = None
+
+        if blog_data.status == BlogStatus.PUBLISHED:
+            published_at = datetime.now(timezone.utc)
+
+        # Create new blog with auto-generated fields (title uniqueness enforced by database constraint)
         new_blog = Blog(
-            **blog_data.model_dump(exclude_unset=True),
+            **blog_data.model_dump(exclude={"slug", "excerpt", "meta_description"}),
+            slug=slug,
+            reading_time_minutes=reading_time,
+            excerpt=excerpt,
+            meta_description=meta_description,
+            published_at=published_at,
             author_id=current_user.id,
             author=current_user,
         )
@@ -232,6 +301,7 @@ async def create_blog(
             extra={
                 "user_hash": user_hash,
                 "blog_id": new_blog.id,
+                "slug": new_blog.slug,
                 "status": new_blog.status.value,
             },
         )
@@ -271,10 +341,9 @@ async def create_blog(
             detail="Unexpected error occurred",
         ) from e
 
-
 @router.get(
     "/",
-    response_model=list[BlogOut],
+    response_model=list[BlogListOut],
     summary="List public blogs",
     description="Retrieve paginated list of published, public blogs.",
     responses={
@@ -291,26 +360,32 @@ async def get_all_blogs(
         le=MAX_LIMIT,
         description="Maximum records to return",
     ),
-    search: constr(max_length=MAX_SEARCH_LENGTH) = Query(
-        "",
-        description="Search blogs by title or content",
-    ),
+    search: Annotated[str, Query( max_length=MAX_SEARCH_LENGTH, description="Search blogs by title or content")] = "",
     is_featured: Optional[bool] = Query(
         None, description="Filter by featured status"
+    ),
+    is_pinned: Optional[bool] = Query(
+        None, description="Filter by pinned status"
+    ),
+    sort_by: str = Query(
+        "published_at",
+        description="Sort field: created_at, published_at, view_count, reading_time_minutes",
     ),
     tags: Optional[list[str]] = Query(
         None, description="Filter by tags (all must match)"
     ),
     db: Annotated[AsyncSession, Depends(get_async_db)] = None,
-) -> list[BlogOut]:
+) -> list[BlogListOut]:
     """
-    List all public, published blogs with optional filtering.
+    List all public, published blogs with optional filtering and sorting.
 
     **Query Parameters:**
     - skip: Pagination offset (default: 0)
     - limit: Results per page (default: 9, max: 100)
     - search: Search term for title/content (max 100 chars)
     - is_featured: Filter by featured status (true/false/null)
+    - is_pinned: Filter by pinned status
+    - sort_by: Sort field (created_at, published_at, view_count, reading_time_minutes)
     - tags: Filter by tags (returns blogs matching ALL tags)
 
     **Response:**
@@ -321,6 +396,7 @@ async def get_all_blogs(
     - `GET /blogs/?search=python` - Blogs matching "python"
     - `GET /blogs/?is_featured=true` - Featured blogs only
     - `GET /blogs/?tags=fastapi&tags=async` - Blogs with both tags
+    - `GET /blogs/?sort_by=view_count` - Most viewed blogs
 
     **Returns:**
     - 200: List of blogs (may be empty)
@@ -334,18 +410,24 @@ async def get_all_blogs(
                 "skip": skip,
                 "limit": limit,
                 "search_length": len(search) if search else 0,
+                "sort_by": sort_by,
                 "has_tags": tags is not None and len(tags) > 0,
             },
         )
+
+        # Validate sort_by parameter
+        valid_sort_fields = ["created_at", "published_at", "view_count", "reading_time_minutes"]
+        if sort_by not in valid_sort_fields:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"Invalid sort field. Must be one of: {', '.join(valid_sort_fields)}",
+            )
 
         # Base query: public and published blogs only
         query = select(Blog).where(
             Blog.is_public == True,
             Blog.status == BlogStatus.PUBLISHED,
         )
-
-        # Pagination
-        query = query.order_by(Blog.created_at.desc()).offset(skip).limit(limit)
 
         # Search filter
         if search:
@@ -354,6 +436,7 @@ async def get_all_blogs(
                 or_(
                     Blog.title.ilike(f"%{safe_search}%"),
                     Blog.content.ilike(f"%{safe_search}%"),
+                    Blog.slug.ilike(f"%{safe_search}%"),
                 )
             )
             logger.debug(
@@ -364,6 +447,10 @@ async def get_all_blogs(
         # Featured filter
         if is_featured is not None:
             query = query.where(Blog.is_featured == is_featured)
+
+        # Pinned filter
+        if is_pinned is not None:
+            query = query.where(Blog.is_pinned == is_pinned)
 
         # Tag filters (all tags must be present)
         if tags and len(tags) > 0:
@@ -385,6 +472,19 @@ async def get_all_blogs(
                     ])
                 if conditions:
                     query = query.where(or_(*conditions))
+        
+        # Apply sorting
+        if sort_by == "created_at":
+            query = query.order_by(Blog.created_at.desc())
+        elif sort_by == "published_at":
+            query = query.order_by(Blog.published_at.desc())
+        elif sort_by == "view_count":
+            query = query.order_by(Blog.view_count.desc())
+        elif sort_by == "reading_time_minutes":
+            query = query.order_by(Blog.reading_time_minutes.desc())
+
+        # Pagination
+        query = query.offset(skip).limit(limit)
 
         # Execute with timeout
         try:
@@ -399,7 +499,7 @@ async def get_all_blogs(
                 extra={"count": len(blogs), "skip": skip, "limit": limit},
             )
 
-            return [BlogOut.model_validate(blog) for blog in blogs]
+            return [BlogListOut.model_validate(blog) for blog in blogs]
 
         except asyncio.TimeoutError:
             logger.error(
@@ -432,6 +532,135 @@ async def get_all_blogs(
             detail="Unexpected error occurred",
         ) from e
 
+@router.get(
+    "/popular",
+    response_model=list[BlogListOut],
+    summary="Get popular blogs",
+    description="Retrieve most viewed published blogs (sorted by view_count DESC).",
+    responses={
+        200: {"description": "List of popular blogs"},
+        504: {"description": "Query timeout"},
+    },
+)
+async def get_popular_blogs(
+    limit: int = Query(
+        10,
+        ge=1,
+        le=MAX_LIMIT,
+        description="Number of popular blogs to return (max 100)",
+    ),
+    db: Annotated[AsyncSession, Depends(get_async_db)] = None,
+) -> list[BlogListOut]:
+
+    """
+    Get the most popular blogs (sorted by view count descending).
+    Great for "Popular Posts" sidebar or homepage widgets.
+
+    **Query Parameters:**
+    - limit: Number of blogs to return (default: 10, max: 100)
+
+    **Returns:**
+    - 200: List of popular blogs sorted by view_count DESC
+    - 504: Query timeout
+    """
+
+    try:
+        query = (
+            select(Blog)
+            .where(
+                Blog.is_public == True,
+                Blog.status == BlogStatus.PUBLISHED,
+            )
+            .order_by(Blog.view_count.desc())
+            .limit(limit)
+        )
+
+        result = await asyncio.wait_for(
+            db.execute(query),
+            timeout=QUERY_TIMEOUT,
+        )
+
+        blogs = result.scalars().all()
+
+        logger.info(
+            "Popular blogs retrieved",
+            extra={"count": len(blogs)},
+
+        )
+
+        return [BlogListOut.model_validate(blog) for blog in blogs]
+
+    except asyncio.TimeoutError:
+        logger.error("Popular blogs query timed out")
+        raise HTTPException(
+            status_code=status.HTTP_504_GATEWAY_TIMEOUT,
+            detail="Query took too long",
+        )
+
+    except SQLAlchemyError as e:
+        logger.error("Database error during popular blogs query", exc_info=True)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Failed to retrieve popular blogs",
+        ) from e
+
+@router.get(
+    "/slug/{slug}",
+    response_model=BlogOut,
+    summary="Get blog by slug (SEO URL)",
+    description="Retrieve a blog post by its SEO-friendly slug and increment view count.",
+    responses={
+        200: {"description": "Blog retrieved and view count incremented"},
+        404: {"description": "Blog not found"},
+    },
+)
+async def get_blog_by_slug(
+    slug: str,
+    db: Annotated[AsyncSession, Depends(get_async_db)] = None,
+) -> BlogOut:
+
+    """
+    Retrieve a blog post by its slug (URL-friendly identifier).
+    Automatically increments the view_count for analytics.
+
+    **Path Parameters:**
+    - slug: Blog slug (e.g., "getting-started-with-fastapi")
+
+    **Returns:**
+    - 200: Blog with all fields including SEO metadata
+    - 404: Blog not found
+
+    **Note:** View count is incremented automatically for analytics.
+    """
+
+    try:
+        blog = await _get_blog_by_slug(db, slug)
+
+        # Increment view count
+        await db.execute(
+            update(Blog)
+            .where(Blog.id == blog.id)
+            .values(view_count=Blog.view_count + 1)
+        )
+
+        await db.commit()
+
+        # Refresh to get updated view_count
+        await db.refresh(blog)
+
+        logger.debug("Blog retrieved by slug", extra={"slug": slug})
+
+        return BlogOut.model_validate(blog)
+
+    except HTTPException:
+        raise
+
+    except SQLAlchemyError as e:
+        logger.error("Database error during blog retrieval by slug", exc_info=True)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Failed to retrieve blog",
+        ) from e
 
 @router.get(
     "/dashboard",
@@ -448,20 +677,21 @@ async def get_all_blogs(
 )
 async def get_dashboard_blogs(
     status_filter: str = Query(
-        "DRAFT",
+        "draft",
         alias="status",
-        description="Filter by blog status (DRAFT, PUBLISHED, ARCHIVED)",
+        description="Filter by blog status (draft, published, archived, scheduled)",
     ),
     db: Annotated[AsyncSession, Depends(get_async_db)] = None,
     current_user: Annotated[User, Depends(get_current_active_user)] = None,
 ) -> list[BlogOut]:
     """
     Get current user's blogs filtered by status.
+    Allows users to view their draft, published, archived, or scheduled posts.
 
     **Requires:** Authentication
 
     **Query Parameters:**
-    - status: Blog status to filter by (DRAFT, PUBLISHED, ARCHIVED)
+    - status: Blog status to filter by (draft, published, archived, scheduled)
 
     **Returns:**
     - 200: List of user's blogs (only blogs owned by current user)
@@ -470,7 +700,7 @@ async def get_dashboard_blogs(
     - 504: Query timeout
 
     **Example:**
-    - `GET /blogs/dashboard?status=DRAFT` - User's draft blogs
+    - `GET /blogs/dashboard?status=published` - User's published blogs
     """
     user_hash = _hash_user_id(current_user.id)
 
@@ -563,12 +793,11 @@ async def get_dashboard_blogs(
             detail="Unexpected error occurred",
         ) from e
 
-
 @router.get(
     "/{blog_id}",
     response_model=BlogOut,
     status_code=status.HTTP_200_OK,
-    summary="Get a blog post",
+    summary="Get a blog post by ID",
     description="Retrieve a single blog post with author details.",
     responses={
         200: {"description": "Blog retrieved"},
@@ -628,7 +857,6 @@ async def get_blog(
             detail="Unexpected error occurred",
         ) from e
 
-
 @router.put(
     "/{blog_id}",
     response_model=BlogOut,
@@ -639,6 +867,7 @@ async def get_blog(
         400: {"description": "Invalid update data"},
         403: {"description": "Not authorized"},
         404: {"description": "Blog not found"},
+        409: {"description": "Slug conflict"},
     },
 )
 async def update_blog(
@@ -648,7 +877,7 @@ async def update_blog(
     current_user: Annotated[User, Depends(get_current_active_user)] = None,
 ) -> BlogOut:
     """
-    Update a blog post.
+    Update a blog post with optional SEO fields.
 
     **Requires:** Authentication (must be blog author)
 
@@ -657,13 +886,18 @@ async def update_blog(
 
     **Request Body:**
     - Partial updates supported (only modified fields required)
-    - title, content, description, status, is_public, is_featured, tags
+    - Can update: title, content, excerpt, slug, meta_description, meta_keywords, og_image, status, etc.
+
+    **Auto-Updates:**
+    - If title changes, slug can be auto-updated
+    - reading_time_minutes auto-updated if content changes
 
     **Returns:**
-    - 200: Updated blog
+    - 200: Updated blog with all fields
     - 400: Invalid data
     - 403: Not authorized (not the author)
     - 404: Blog not found
+    - 409: Slug conflict (duplicate)
 
     **Note:** Only the blog author can update their blogs.
     """
@@ -700,6 +934,22 @@ async def update_blog(
                 detail="No update data provided",
             )
 
+        # Auto-calculate reading time if content changed
+        if "content" in update_data:
+            update_data["reading_time_minutes"] = _calculate_reading_time(
+                update_data["content"]
+            )
+
+        # Auto-generate slug if title changed and slug not provided
+        if "title" in update_data and "slug" not in update_data:
+            update_data["slug"] = _generate_slug(update_data["title"])
+
+        # Update published_at if status changed to PUBLISHED
+        if (
+            "status" in update_data and update_data["status"] == "published" and not existing_blog.published_at
+        ):
+            update_data["published_at"] = datetime.now(timezone.utc)
+        
         logger.debug(
             "Applying updates",
             extra={
@@ -764,7 +1014,6 @@ async def update_blog(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Unexpected error occurred",
         ) from e
-
 
 @router.delete(
     "/{blog_id}",
