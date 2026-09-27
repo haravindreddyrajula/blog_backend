@@ -664,7 +664,7 @@ async def get_blog_by_slug(
 
 @router.get(
     "/dashboard",
-    response_model=list[BlogOut],
+    response_model=list[BlogListOut],
     status_code=status.HTTP_200_OK,
     summary="Get user's blog dashboard",
     description="Retrieve all blogs for the current user (all statuses).",
@@ -679,11 +679,12 @@ async def get_dashboard_blogs(
     status_filter: str = Query(
         "draft",
         alias="status",
-        description="Filter by blog status (draft, published, archived, scheduled)",
+        description="Filter by blog status: 'all', 'draft', 'published', 'archived', 'scheduled'",
+        regex="^(all|draft|published|archived|scheduled)$",
     ),
     db: Annotated[AsyncSession, Depends(get_async_db)] = None,
     current_user: Annotated[User, Depends(get_current_active_user)] = None,
-) -> list[BlogOut]:
+) -> list[BlogListOut]:
     """
     Get current user's blogs filtered by status.
     Allows users to view their draft, published, archived, or scheduled posts.
@@ -691,107 +692,288 @@ async def get_dashboard_blogs(
     **Requires:** Authentication
 
     **Query Parameters:**
-    - status: Blog status to filter by (draft, published, archived, scheduled)
+    - status: Filter by status (all, draft, published, archived, scheduled)
+              Default: 'all' (fetch all statuses)
 
     **Returns:**
-    - 200: List of user's blogs (only blogs owned by current user)
+    - 200: List of user's blogs sorted by: pinned first, then by date
     - 400: Invalid status value
     - 401: Not authenticated
     - 504: Query timeout
+    
+    **Sorting Order:**
+    1. is_pinned (DESC) - Pinned blogs at top
+    2. published_at (DESC) - Recently published first (for published blogs)
+    3. updated_at (DESC) - Recently updated (for draft blogs)
+    4. created_at (DESC) - Fallback to creation date
 
-    **Example:**
-    - `GET /blogs/dashboard?status=published` - User's published blogs
     """
     user_hash = _hash_user_id(current_user.id)
 
     try:
         logger.debug(
             "Dashboard access",
-            extra={"user_hash": user_hash, "status": status_filter},
+            extra={"user_hash": user_hash, "status_filter": status_filter},
         )
-
-        # Validate status parameter
-        try:
-            # Ensure status is valid enum
-            blog_status = BlogStatus[status_filter.upper()]
-        except KeyError:
-            valid_statuses = [e.name for e in BlogStatus]
-            logger.warning(
-                "Invalid status parameter",
-                extra={
-                    "user_hash": user_hash,
-                    "provided_status": status_filter,
-                    "valid_options": valid_statuses,
-                },
+        
+        # Normalize status_filter to lowercase
+        status_filter_lower = status_filter.lower()
+        
+        # ====================================================================
+        # CASE 1: Fetch ALL statuses (default, initial render)
+        # ====================================================================
+        if status_filter_lower == "all":
+            query = (
+                select(Blog)
+                .where(Blog.author_id == current_user.id)
+                # SORTING: Pinned first, then by publish/update date
+                .order_by(
+                    Blog.is_pinned.desc(),           # Pinned blogs at top
+                    Blog.published_at.desc(),        # Recently published first
+                    Blog.updated_at.desc(),          # Recently updated (drafts)
+                    Blog.created_at.desc(),          # Fallback to created date
+                )
             )
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail=f"Invalid status. Must be one of: {', '.join(valid_statuses)}",
+            
+            logger.debug(
+                "Fetching ALL blogs for dashboard",
+                extra={"user_hash": user_hash},
             )
-
-        # Query: only user's blogs with specified status
-        query = (
-            select(Blog)
-            .where(
-                Blog.author_id == current_user.id,
-                Blog.status == blog_status,
+        
+        # ====================================================================
+        # CASE 2: Fetch specific status
+        # ====================================================================
+        else:
+            try:
+                # Validate status parameter
+                blog_status = BlogStatus[status_filter_lower.upper()]
+            except KeyError:
+                valid_statuses = ["all"] + [e.name.lower() for e in BlogStatus]
+                logger.warning(
+                    "Invalid status parameter",
+                    extra={
+                        "user_hash": user_hash,
+                        "provided_status": status_filter,
+                        "valid_options": valid_statuses,
+                    },
+                )
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail=f"Invalid status. Must be one of: {', '.join(valid_statuses)}",
+                )
+            
+            query = (
+                select(Blog)
+                .where(
+                    Blog.author_id == current_user.id,
+                    Blog.status == blog_status,
+                )
+                # SORTING: Same for all statuses
+                .order_by(
+                    Blog.is_pinned.desc(),           # Pinned blogs at top
+                    Blog.published_at.desc(),        # Recently published first
+                    Blog.updated_at.desc(),          # Recently updated (drafts)
+                    Blog.created_at.desc(),          # Fallback to created date
+                )
             )
-            .order_by(Blog.created_at.desc())
-        )
-
-        # Execute with timeout
+            
+            logger.debug(
+                "Fetching blogs with status filter",
+                extra={"user_hash": user_hash, "status": status_filter},
+            )
+        
+        # ====================================================================
+        # EXECUTE QUERY WITH TIMEOUT
+        # ====================================================================
         try:
             result = await asyncio.wait_for(
                 db.execute(query),
                 timeout=QUERY_TIMEOUT,
             )
             blogs = result.scalars().all()
-
+            
             logger.info(
                 "Dashboard blogs retrieved",
                 extra={
                     "user_hash": user_hash,
                     "count": len(blogs),
-                    "status": status_filter,
+                    "status_filter": status_filter,
                 },
             )
 
-            return [BlogOut.model_validate(blog) for blog in blogs]
+            return [BlogListOut.model_validate(blog) for blog in blogs]
 
         except asyncio.TimeoutError:
             logger.error(
                 "Dashboard query timed out",
-                extra={"user_hash": user_hash, "status": status_filter},
+                extra={
+                    "user_hash": user_hash,
+                    "status_filter": status_filter,
+                    "timeout": QUERY_TIMEOUT,
+                },
             )
             raise HTTPException(
                 status_code=status.HTTP_504_GATEWAY_TIMEOUT,
-                detail="Query took too long",
+                detail=f"Query took longer than {QUERY_TIMEOUT}s. Please try again.",
             )
-
+    
     except HTTPException:
         raise
-
+    
     except SQLAlchemyError as e:
         logger.error(
             "Database error during dashboard query",
             exc_info=True,
-            extra={"user_hash": user_hash},
+            extra={"user_hash": user_hash, "status_filter": status_filter},
         )
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Failed to retrieve your blogs",
         ) from e
-
+    
     except Exception as e:
         logger.error(
             "Unexpected error during dashboard query",
             exc_info=True,
-            extra={"user_hash": user_hash},
+            extra={"user_hash": user_hash, "status_filter": status_filter},
         )
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Unexpected error occurred",
         ) from e
+
+@router.get(
+    "/dashboard/advanced",
+    response_model=list[BlogListOut],
+    status_code=status.HTTP_200_OK,
+    summary="Advanced dashboard with detailed sorting",
+    description="Dashboard with advanced sorting options",
+)
+async def get_dashboard_blogs_advanced(
+    status_filter: str = Query(
+        "all",
+        alias="status",
+        description="Filter: 'all', 'draft', 'published', 'archived', 'scheduled'",
+        regex="^(all|draft|published|archived|scheduled)$",
+    ),
+    sort_by: str = Query(
+        "smart",
+        alias="sort",
+        description="Sort strategy: 'smart', 'recent', 'views', 'reading_time'",
+        regex="^(smart|recent|views|reading_time)$",
+    ),
+    db: Annotated[AsyncSession, Depends(get_async_db)] = None,
+    current_user: Annotated[User, Depends(get_current_active_user)] = None,
+) -> list[BlogListOut]:
+    """
+    Advanced dashboard with multiple sorting options.
+    
+    **Sort Options:**
+    - 'smart' (default): Pinned first, then by publish/update date (RECOMMENDED)
+    - 'recent': Most recently created/updated first
+    - 'views': Most viewed first
+    - 'reading_time': Longest reading time first
+    
+    **Examples:**
+    - `GET /blogs/dashboard/advanced?status=published&sort=views`
+    - `GET /blogs/dashboard/advanced?status=draft&sort=recent`
+    """
+    user_hash = _hash_user_id(current_user.id)
+    
+    try:
+        # Build WHERE clause
+        where_clauses = [Blog.author_id == current_user.id]
+        
+        if status_filter.lower() != "all":
+            try:
+                blog_status = BlogStatus[status_filter.upper()]
+                where_clauses.append(Blog.status == blog_status)
+            except KeyError:
+                valid_statuses = ["all"] + [e.name.lower() for e in BlogStatus]
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail=f"Invalid status. Must be one of: {', '.join(valid_statuses)}",
+                )
+        
+        # Build ORDER BY based on sort_by parameter
+        sort_by_lower = sort_by.lower()
+        
+        if sort_by_lower == "smart":
+            # DEFAULT: Best UX for dashboard
+            # Pinned at top, then recently published/updated
+            order_by = [
+                Blog.is_pinned.desc(),
+                Blog.published_at.desc(),
+                Blog.updated_at.desc(),
+                Blog.created_at.desc(),
+            ]
+        
+        elif sort_by_lower == "recent":
+            # Recently created/updated first
+            order_by = [
+                Blog.is_pinned.desc(),  # Keep pinned on top
+                Blog.updated_at.desc(),
+                Blog.created_at.desc(),
+            ]
+        
+        elif sort_by_lower == "views":
+            # Most viewed first
+            order_by = [
+                Blog.is_pinned.desc(),  # Keep pinned on top
+                Blog.view_count.desc(),
+                Blog.updated_at.desc(),
+            ]
+        
+        elif sort_by_lower == "reading_time":
+            # Longest reading time first
+            order_by = [
+                Blog.is_pinned.desc(),  # Keep pinned on top
+                Blog.reading_time_minutes.desc(),
+                Blog.updated_at.desc(),
+            ]
+        
+        else:
+            order_by = [Blog.is_pinned.desc(), Blog.updated_at.desc()]
+        
+        query = select(Blog).where(*where_clauses).order_by(*order_by)
+        
+        try:
+            result = await asyncio.wait_for(
+                db.execute(query),
+                timeout=QUERY_TIMEOUT,
+            )
+            blogs = result.scalars().all()
+            
+            logger.info(
+                "Advanced dashboard retrieved",
+                extra={
+                    "user_hash": user_hash,
+                    "count": len(blogs),
+                    "status_filter": status_filter,
+                    "sort_by": sort_by,
+                },
+            )
+
+            return [BlogListOut.model_validate(blog) for blog in blogs]
+
+        except asyncio.TimeoutError:
+            raise HTTPException(
+                status_code=status.HTTP_504_GATEWAY_TIMEOUT,
+                detail=f"Query timed out. Please try again.",
+            )
+    
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(
+            "Advanced dashboard query error",
+            exc_info=True,
+            extra={"user_hash": user_hash},
+        )
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Failed to retrieve blogs",
+        ) from e      
 
 @router.get(
     "/{blog_id}",

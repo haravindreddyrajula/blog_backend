@@ -9,16 +9,14 @@ Environment variables should be sourced from a `.env` file (development only)
 or set directly in the deployment environment (production).
 """
 
-import os
 import logging
+import os
 from functools import cached_property
 from pathlib import Path
 from typing import Literal
-from urllib.parse import urlparse
 
 from pydantic import Field, SecretStr, model_validator
 from pydantic_settings import BaseSettings
-
 
 logger = logging.getLogger(__name__)
 

@@ -62,7 +62,7 @@ if settings.is_production:
     settings.DEBUG = False
 
 # Validate debug mode (will raise if DEBUG=True in production)
-#settings.validate_debug_mode()
+settings.validate_debug_mode()
 
 # Constants
 STARTUP_TIMEOUT = 30.0
