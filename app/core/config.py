@@ -15,8 +15,8 @@ from functools import cached_property
 from pathlib import Path
 from typing import Literal
 
-from pydantic import Field, SecretStr, model_validator
-from pydantic_settings import BaseSettings
+from pydantic import Field, SecretStr, model_validator, computed_field
+from pydantic_settings import BaseSettings, SettingsConfigDict
 
 logger = logging.getLogger(__name__)
 
@@ -37,13 +37,11 @@ class Settings(BaseSettings):
     # ============================================================================
     ENVIRONMENT: Literal["development", "production"] = Field(
         default="development",
-        env="ENVIRONMENT",
         description="Runtime environment"
     )
 
     DEBUG: bool = Field(
-        default=False,
-        env="DEBUG",
+        default=True,
         description="Enable debug mode (never use in production)"
     )
 
@@ -51,20 +49,17 @@ class Settings(BaseSettings):
     # API METADATA
     # ============================================================================
     PROJECT_NAME: str = Field(
-        default="Private Blog API",
-        env="PROJECT_NAME",
+        default="Private Blog",
         description="Application name for documentation"
     )
 
     PROJECT_DESCRIPTION: str = Field(
         default="A secure private blogging platform",
-        env="PROJECT_DESCRIPTION",
         description="Application description for documentation"
     )
 
     VERSION: str = Field(
-        default="1.0.0",
-        env="VERSION",
+        default="0.0.1",
         description="API version"
     )
 
@@ -75,27 +70,23 @@ class Settings(BaseSettings):
     # ============================================================================
     HOST: str = Field(
         default="0.0.0.0",
-        env="HOST",
         description="Server host to bind to"
     )
 
     PORT: int = Field(
-        default=8000,
-        env="PORT",
+        default=7999,
         ge=1,
         le=65535,
         description="Server port"
     )
 
     RELOAD: bool = Field(
-        default=False,
-        env="RELOAD",
+        default=True,
         description="Enable auto-reload on code changes"
     )
 
     LOG_LEVEL: Literal["debug", "info", "warning", "error", "critical"] = Field(
         default="info",
-        env="LOG_LEVEL",
         description="Logging level"
     )
 
@@ -104,43 +95,38 @@ class Settings(BaseSettings):
     # ============================================================================
     SECRET_KEY: SecretStr = Field(
         ...,  # Required
-        env="SECRET_KEY",
         description="JWT signing key (minimum 32 characters)"
     )
 
     ALGORITHM: str = Field(
         default="HS256",
-        env="ALGORITHM",
         description="JWT algorithm"
     )
 
     ACCESS_TOKEN_EXPIRE_MINUTES: int = Field(
         default=30,
-        env="ACCESS_TOKEN_EXPIRE_MINUTES",
         gt=0,
         description="Access token expiration in minutes"
     )
 
     REFRESH_TOKEN_EXPIRE_MINUTES: int = Field(
         default=1440,  # 24 hours
-        env="REFRESH_TOKEN_EXPIRE_MINUTES",
         gt=0,
         description="Refresh token expiration in minutes"
     )
 
     JWT_ISSUER: str = Field(
-        env="JWT_ISSUER",
-        description="JWT issuer identifier (required in production)"
+        default="your-app-name",
+        description="JWT issuer identifier (required in production)",
     )
 
     JWT_AUDIENCE: str = Field(
-        env="JWT_AUDIENCE",
-        description="JWT audience identifier (required in production)"
+        default="your-app-audience",
+        description="JWT audience identifier (required in production)",
     )
 
     POSTGRES_STATEMENT_TIMEOUT_MS: int = Field(
         default=30000,  # 30 seconds
-        env="POSTGRES_STATEMENT_TIMEOUT_MS",
         gt=0,
         description="PostgreSQL statement timeout in milliseconds"
     )
@@ -150,25 +136,21 @@ class Settings(BaseSettings):
     # ============================================================================
     CORS_ORIGINS: list[str] = Field(
         default_factory=lambda: ["http://localhost:5173", "http://127.0.0.1:5173"],
-        env="CORS_ORIGINS",
         description="Allowed CORS origins (comma-separated)"
     )
 
     CORS_ALLOW_CREDENTIALS: bool = Field(
         default=True,
-        env="CORS_ALLOW_CREDENTIALS",
         description="Allow credentials in CORS requests"
     )
 
     CORS_ALLOW_METHODS: list[str] = Field(
         default_factory=lambda: ["GET", "POST", "PUT", "DELETE", "OPTIONS"],
-        env="CORS_ALLOW_METHODS",
         description="Allowed HTTP methods (comma-separated)"
     )
 
     CORS_ALLOW_HEADERS: list[str] = Field(
         default_factory=lambda: ["Content-Type", "Authorization"],
-        env="CORS_ALLOW_HEADERS",
         description="Allowed request headers (comma-separated)"
     )
 
@@ -177,47 +159,40 @@ class Settings(BaseSettings):
     # ============================================================================
     DATABASE_URL: str = Field(
         default="sqlite+aiosqlite:///./blog.db",
-        env="DATABASE_URL",
         description="SQLAlchemy database connection string"
     )
 
     DB_POOL_SIZE: int = Field(
         default=20,
-        env="DB_POOL_SIZE",
         ge=1,
         description="Database connection pool size"
     )
 
     DB_MAX_OVERFLOW: int = Field(
         default=10,
-        env="DB_MAX_OVERFLOW",
         ge=0,
         description="Maximum overflow connections"
     )
 
     DB_POOL_TIMEOUT: int = Field(
         default=30,
-        env="DB_POOL_TIMEOUT",
         gt=0,
         description="Connection pool timeout in seconds"
     )
 
     DB_POOL_RECYCLE: int = Field(
         default=3600,
-        env="DB_POOL_RECYCLE",
         gt=0,
         description="Recycle connections after N seconds (prevents stale connections)"
     )
 
     DB_ECHO: bool = Field(
         default=False,
-        env="DB_ECHO",
         description="Enable SQL query logging"
     )
 
     DB_POOL_PRE_PING: bool = Field(
         default=True,
-        env="DB_POOL_PRE_PING",
         description="Test connection health before using from pool"
     )
 
@@ -226,13 +201,11 @@ class Settings(BaseSettings):
     # ============================================================================
     STATIC_FILES_DIR: str = Field(
         default="static",
-        env="STATIC_FILES_DIR",
         description="Static files directory path"
     )
 
     UPLOADS_DIR: str = Field(
         default="uploads",
-        env="UPLOADS_DIR",
         description="User uploads directory path (relative to STATIC_FILES_DIR)"
     )
 
@@ -241,31 +214,28 @@ class Settings(BaseSettings):
     # ============================================================================
     DOCS_ENABLED: bool = Field(
         default=True,
-        env="DOCS_ENABLED",
         description="Enable Swagger/ReDoc documentation endpoints"
     )
 
     HEALTH_CHECK_ENABLED: bool = Field(
         default=True,
-        env="HEALTH_CHECK_ENABLED",
         description="Enable health check endpoint"
     )
 
     SECURITY_HEADERS_ENABLED: bool = Field(
         default=True,
-        env="SECURITY_HEADERS_ENABLED",
         description="Enable security headers middleware"
     )
 
     # ============================================================================
     # PYDANTIC CONFIGURATION
     # ============================================================================
-    model_config = {
-        "env_file": ".env",
-        "env_file_encoding": "utf-8",
-        "case_sensitive": False,
-        "extra": "ignore",
-    }
+    model_config = SettingsConfigDict(
+        env_file=".env",
+        env_file_encoding="utf-8",
+        case_sensitive=False,
+        extra="ignore",
+    )
 
     # ============================================================================
     # VALIDATORS
@@ -283,6 +253,11 @@ class Settings(BaseSettings):
         if self.is_production and self.DEBUG:
             raise ValueError(
                 "DEBUG mode must be False in production environment"
+            )
+
+        if self.is_production and self.LOG_LEVEL == "debug":
+            raise ValueError(
+                "LOG_LEVEL must not be 'debug' in production environment"
             )
 
         # Validate RELOAD mode
@@ -349,61 +324,55 @@ class Settings(BaseSettings):
                     f"{path_name} must be a relative path, got: {path_value}"
                 )
             # Prevent path traversal
-            if ".." in path_value or path_value.startswith("/"):
+            if ".." in path_value:
                 raise ValueError(
                     f"{path_name} contains unsafe path patterns: {path_value}"
                 )
 
     # ============================================================================
-    # CACHED PROPERTIES (computed once and cached)
+    # CACHED PROPERTIES (computed once cached and serialization-safe)
     # ============================================================================
+    @computed_field(repr=False)
     @cached_property
     def is_production(self) -> bool:
         """Check if running in production environment."""
         return self.ENVIRONMENT == "production"
 
+    @computed_field(repr=False)
     @cached_property
     def is_development(self) -> bool:
         """Check if running in development environment."""
         return self.ENVIRONMENT == "development"
 
+    @computed_field(repr=False)
     @cached_property
     def is_sqlite(self) -> bool:
         """Check if using SQLite database."""
         return "sqlite" in self.DATABASE_URL.lower()
 
+    @computed_field(repr=False)
     @cached_property
     def is_postgres(self) -> bool:
         """Check if using PostgreSQL database."""
         return "postgresql" in self.DATABASE_URL.lower()
 
+    @computed_field(repr=False)
     @cached_property
     def should_reload(self) -> bool:
         """Determine if auto-reload should be enabled."""
         return self.RELOAD and self.is_development
 
     # ============================================================================
-    # COMPUTED PROPERTIES
+    # COMPUTED PROPERTIES (recomputed on every access, not cached)
     # ============================================================================
     @property
     def static_uploads_dir(self) -> Path:
-        """
-        Get the full path to the uploads directory.
-
-        Returns:
-            Path object for the uploads directory
-        """
-        uploads_path = Path(self.STATIC_FILES_DIR) / self.UPLOADS_DIR
-        return uploads_path
+        """Get the full path to the uploads directory."""
+        return Path(self.STATIC_FILES_DIR) / self.UPLOADS_DIR
 
     @property
     def docs_config(self) -> dict:
-        """
-        Generate docs configuration for FastAPI app initialization.
-
-        Returns:
-            Dict with docs_url and redoc_url, or None if disabled
-        """
+        """Generate docs configuration for FastAPI app initialization."""
         return {
             "docs_url": "/docs" if self.DOCS_ENABLED else None,
             "redoc_url": "/redoc" if self.DOCS_ENABLED else None,
@@ -411,12 +380,7 @@ class Settings(BaseSettings):
 
     @property
     def database_config(self) -> dict:
-        """
-        Generate SQLAlchemy engine configuration.
-
-        Returns:
-            Dict with connection pool and echo settings
-        """
+        """Generate SQLAlchemy engine configuration."""
         return {
             "pool_size": self.DB_POOL_SIZE,
             "max_overflow": self.DB_MAX_OVERFLOW,
@@ -430,8 +394,6 @@ class Settings(BaseSettings):
 # ============================================================================
 # SINGLETON INSTANCE
 # ============================================================================
-# Load settings once at module import time
-# Access via: from config import settings
 try:
     settings = Settings()
     logger.info(
