@@ -23,9 +23,7 @@ Assumptions:
   - Environment variables: DATABASE_URL, SECRET_KEY, ENVIRONMENT
 """
 
-import asyncio
 import logging
-import os
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Annotated
@@ -39,9 +37,9 @@ from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import settings
-from app.core.database import Base, engine
+from app.core.database import Base, engine, dispose_engine, check_database_connection
 from app.core.deps import get_async_db
-from app.routes import auth, blog, comment
+from app.routes import auth, blog, comment, health
 from app.services import image
 from app.services.logging_config import setup_logging
 
@@ -61,11 +59,7 @@ if settings.is_production:
     settings.RELOAD = False
     settings.DEBUG = False
 
-# Validate debug mode (will raise if DEBUG=True in production)
-settings.validate_debug_mode()
-
 # Constants
-STARTUP_TIMEOUT = 30.0
 SHUTDOWN_TIMEOUT = 30.0
 MIN_UPLOAD_DIR_PERMISSIONS = 0o755
 
@@ -130,46 +124,6 @@ async def _verify_upload_directory() -> None:
         ) from e
 
 
-async def _verify_database_connection() -> None:
-    """
-    Verify database connection is accessible on startup.
-
-    Executes a simple SELECT 1 query to verify:
-    - Database server is reachable
-    - Credentials are valid
-    - Connection pool can be established
-    - Database is responsive
-
-    Fails fast with clear error message if database is unavailable.
-
-    Raises:
-        RuntimeError: If database is unreachable or unresponsive
-    """
-    try:
-        async with engine.begin() as conn:
-            await conn.execute(text("SELECT 1"))
-        logger.info("Database connection verified successfully")
-
-    except SQLAlchemyError as e:
-        logger.critical(
-            "Database connection verification failed",
-            exc_info=True,
-            extra={"database_url_masked": "***"},
-        )
-        raise RuntimeError(
-            "Database is unreachable. Check DATABASE_URL and server connectivity."
-        ) from e
-
-    except Exception as e:
-        logger.critical(
-            "Unexpected error during database verification",
-            exc_info=True,
-        )
-        raise RuntimeError(
-            "Database verification failed unexpectedly."
-        ) from e
-
-
 async def _initialize_database_schema() -> None:
     """
     Initialize database schema (development/testing only).
@@ -210,39 +164,9 @@ async def _initialize_database_schema() -> None:
         ) from e
 
 
-async def _shutdown_database_engine() -> None:
-    """
-    Gracefully shutdown database engine with timeout.
-
-    Disposes all database connections in the pool and cleans up resources.
-    Uses timeout to prevent hanging if connections are stuck.
-
-    Logs warnings if shutdown takes longer than expected.
-    """
-    try:
-        # Dispose with timeout to prevent hanging
-        await asyncio.wait_for(engine.dispose(), timeout=SHUTDOWN_TIMEOUT)
-        logger.info("Database engine disposed successfully")
-
-    except asyncio.TimeoutError:
-        logger.warning(
-            "Database shutdown timeout - forcing closure",
-            extra={"timeout_seconds": SHUTDOWN_TIMEOUT},
-        )
-        # Force closure if timeout occurs
-        await engine.dispose()
-
-    except Exception as e:
-        logger.error(
-            "Error during database shutdown",
-            exc_info=True,
-        )
-
-
 # ============================================================================
 # LIFESPAN CONTEXT MANAGER
 # ============================================================================
-
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -278,7 +202,7 @@ async def lifespan(app: FastAPI):
 
         # 2. Verify database is accessible
         logger.info("Verifying database connection...")
-        await _verify_database_connection()
+        await check_database_connection(max_attempts=5, initial_delay_seconds=1.0, backoff_multiplier=2.0)
 
         # 3. Initialize schema if development
         if settings.ENVIRONMENT == "development":
@@ -310,7 +234,7 @@ async def lifespan(app: FastAPI):
 
     try:
         # Cleanup database connections
-        await _shutdown_database_engine()
+        await dispose_engine(timeout_seconds=SHUTDOWN_TIMEOUT)
         logger.info("Application shutdown completed successfully")
 
     except Exception as shutdown_error:
@@ -341,6 +265,7 @@ app = FastAPI(
 # ============================================================================
 
 # CORS Middleware - restrict origins per environment
+# noinspection PyTypeChecker
 app.add_middleware(
     CORSMiddleware,
     allow_origins=settings.CORS_ORIGINS,
@@ -350,6 +275,7 @@ app.add_middleware(
 )
 
 # Compression Middleware - compress responses over 1KB
+# noinspection PyTypeChecker
 app.add_middleware(GZipMiddleware, minimum_size=1000)
 
 # ============================================================================
@@ -378,7 +304,6 @@ try:
 except Exception as e:
     logger.error(
         "Failed to mount static files",
-        exc_info=True,
         extra={"path": settings.STATIC_FILES_DIR},
     )
 
@@ -408,6 +333,11 @@ app.include_router(
     image.router,
     prefix=settings.API_V1_STR,
     tags=["Images"],
+)
+
+app.include_router(
+    health.router,
+    tags=["Health"],
 )
 
 # ============================================================================
