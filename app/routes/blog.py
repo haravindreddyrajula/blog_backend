@@ -19,30 +19,27 @@ A secure, well-architected blog CRUD API with:
 import asyncio
 import hashlib
 import logging
-from typing import Annotated, Optional
-from contextlib import suppress
 from datetime import datetime, timezone
+from typing import Annotated, Optional
+
 from fastapi import (
     APIRouter,
     Depends,
     HTTPException,
     Query,
-    Request,
-    Security,
     status,
 )
-from pydantic import constr
-from sqlalchemy import ARRAY, or_, select, update, func
+from slugify import slugify
+from sqlalchemy import ARRAY, or_, select, update
 from sqlalchemy.exc import SQLAlchemyError, IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
-from slugify import slugify
-from app.core.config import settings
+
+from app.core.constants import UNEXPECTED_ERROR
 from app.core.deps import get_async_db
 from app.models.blog import Blog, BlogStatus
-from app.models.comment import Comment
 from app.models.user import User
-from app.schemas.blog import BlogCreate, BlogOut, BlogUpdate, BlogListOut, BlogStatus as SchemaStatus
+from app.schemas.blog import BlogCreate, BlogOut, BlogUpdate, BlogListOut
 from app.services.user import get_current_active_user
 
 # Configure logger
@@ -56,6 +53,7 @@ DEFAULT_LIMIT = 9
 MAX_SEARCH_LENGTH = 100
 QUERY_TIMEOUT = 10.0
 HASH_SEED = "blog_event"  # For non-security hashing
+BLOG_NOT_FOUND = "Blog not found"
 
 # ============================================================================
 # UTILITY FUNCTIONS
@@ -120,12 +118,12 @@ async def _get_blog_or_404(
 
     if not blog:
         logger.warning(
-            "Blog not found",
+            BLOG_NOT_FOUND,
             extra={"blog_id": blog_id, "request_type": "read"},
         )
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
-            detail="Blog not found",
+            detail=BLOG_NOT_FOUND,
         )
 
     logger.info(
@@ -157,13 +155,13 @@ async def _get_blog_by_slug(db: AsyncSession, slug: str) -> Blog:
 
     if not blog:
         logger.warning(
-            "Blog not found by slug",
+            BLOG_NOT_FOUND + " by slug",
             extra={"slug": slug, "request_type": "read"},
         )
 
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
-            detail="Blog not found",
+            detail=BLOG_NOT_FOUND,
         )
 
     return blog
@@ -203,7 +201,6 @@ def _check_authorization(blog: Blog, user: User, operation: str) -> None:
 
 @router.post(
     "/",
-    response_model=BlogOut,
     status_code=status.HTTP_201_CREATED,
     summary="Create a new blog post",
     description="Create a new blog post with the provided data. Author is set to current user.",
@@ -320,9 +317,8 @@ async def create_blog(
         ) from e
 
     except SQLAlchemyError as e:
-        logger.error(
+        logger.exception(
             "Database error during blog creation",
-            exc_info=True,
             extra={"user_hash": user_hash},
         )
         raise HTTPException(
@@ -331,19 +327,17 @@ async def create_blog(
         ) from e
 
     except Exception as e:
-        logger.error(
+        logger.exception(
             "Unexpected error during blog creation",
-            exc_info=True,
             extra={"user_hash": user_hash},
         )
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="Unexpected error occurred",
+            detail=UNEXPECTED_ERROR,
         ) from e
 
 @router.get(
     "/",
-    response_model=list[BlogListOut],
     summary="List public blogs",
     description="Retrieve paginated list of published, public blogs.",
     responses={
@@ -353,28 +347,22 @@ async def create_blog(
     },
 )
 async def get_all_blogs(
-    skip: int = Query(0, ge=0, description="Number of records to skip"),
-    limit: int = Query(
-        DEFAULT_LIMIT,
-        ge=MIN_LIMIT,
-        le=MAX_LIMIT,
-        description="Maximum records to return",
-    ),
-    search: Annotated[str, Query( max_length=MAX_SEARCH_LENGTH, description="Search blogs by title or content")] = "",
-    is_featured: Optional[bool] = Query(
-        None, description="Filter by featured status"
-    ),
-    is_pinned: Optional[bool] = Query(
-        None, description="Filter by pinned status"
-    ),
-    sort_by: str = Query(
-        "published_at",
-        description="Sort field: created_at, published_at, view_count, reading_time_minutes",
-    ),
-    tags: Optional[list[str]] = Query(
-        None, description="Filter by tags (all must match)"
-    ),
-    db: Annotated[AsyncSession, Depends(get_async_db)] = None,
+    db: Annotated[AsyncSession, Depends(get_async_db)],
+    skip: Annotated[int, Query(ge=0, description="Number of records to skip")] = 0,
+    limit: Annotated[
+        int,
+        Query(ge=MIN_LIMIT, le=MAX_LIMIT, description="Maximum records to return"),
+    ] = DEFAULT_LIMIT,
+    search: Annotated[
+        str, Query(max_length=MAX_SEARCH_LENGTH, description="Search blogs by title or content")
+    ] = "",
+    is_featured: Annotated[Optional[bool], Query(description="Filter by featured status")] = None,
+    is_pinned: Annotated[Optional[bool], Query(description="Filter by pinned status")] = None,
+    sort_by: Annotated[
+        str,
+        Query(description="Sort field: created_at, published_at, view_count, reading_time_minutes"),
+    ] = "published_at",
+    tags: Annotated[Optional[list[str]], Query(description="Filter by tags (all must match)")] = None,
 ) -> list[BlogListOut]:
     """
     List all public, published blogs with optional filtering and sorting.
@@ -516,25 +504,23 @@ async def get_all_blogs(
         raise
 
     except SQLAlchemyError as e:
-        logger.error("Database error during blog listing", exc_info=True)
+        logger.exception("Database error during blog listing")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Failed to retrieve blogs",
         ) from e
 
     except Exception as e:
-        logger.error(
+        logger.exception(
             "Unexpected error during blog listing",
-            exc_info=True,
         )
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="Unexpected error occurred",
+            detail=UNEXPECTED_ERROR,
         ) from e
 
 @router.get(
     "/popular",
-    response_model=list[BlogListOut],
     summary="Get popular blogs",
     description="Retrieve most viewed published blogs (sorted by view_count DESC).",
     responses={
@@ -543,13 +529,11 @@ async def get_all_blogs(
     },
 )
 async def get_popular_blogs(
-    limit: int = Query(
-        10,
-        ge=1,
-        le=MAX_LIMIT,
-        description="Number of popular blogs to return (max 100)",
-    ),
-    db: Annotated[AsyncSession, Depends(get_async_db)] = None,
+    db: Annotated[AsyncSession, Depends(get_async_db)],
+    limit: Annotated[
+            int,
+            Query(ge=MIN_LIMIT, le=MAX_LIMIT, description="Maximum records to return"),
+        ] = DEFAULT_LIMIT,
 ) -> list[BlogListOut]:
 
     """
@@ -598,7 +582,7 @@ async def get_popular_blogs(
         )
 
     except SQLAlchemyError as e:
-        logger.error("Database error during popular blogs query", exc_info=True)
+        logger.exception("Database error during popular blogs query")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Failed to retrieve popular blogs",
@@ -606,17 +590,16 @@ async def get_popular_blogs(
 
 @router.get(
     "/slug/{slug}",
-    response_model=BlogOut,
     summary="Get blog by slug (SEO URL)",
     description="Retrieve a blog post by its SEO-friendly slug and increment view count.",
     responses={
         200: {"description": "Blog retrieved and view count incremented"},
-        404: {"description": "Blog not found"},
+        404: {"description": BLOG_NOT_FOUND},
     },
 )
 async def get_blog_by_slug(
+    db: Annotated[AsyncSession, Depends(get_async_db)],
     slug: str,
-    db: Annotated[AsyncSession, Depends(get_async_db)] = None,
 ) -> BlogOut:
 
     """
@@ -656,7 +639,7 @@ async def get_blog_by_slug(
         raise
 
     except SQLAlchemyError as e:
-        logger.error("Database error during blog retrieval by slug", exc_info=True)
+        logger.exception("Database error during blog retrieval by slug")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Failed to retrieve blog",
@@ -664,7 +647,6 @@ async def get_blog_by_slug(
 
 @router.get(
     "/dashboard",
-    response_model=list[BlogListOut],
     status_code=status.HTTP_200_OK,
     summary="Get user's blog dashboard",
     description="Retrieve all blogs for the current user (all statuses).",
@@ -676,14 +658,16 @@ async def get_blog_by_slug(
     },
 )
 async def get_dashboard_blogs(
-    status_filter: str = Query(
-        "draft",
-        alias="status",
-        description="Filter by blog status: 'all', 'draft', 'published', 'archived', 'scheduled'",
-        regex="^(all|draft|published|archived|scheduled)$",
-    ),
-    db: Annotated[AsyncSession, Depends(get_async_db)] = None,
-    current_user: Annotated[User, Depends(get_current_active_user)] = None,
+    db: Annotated[AsyncSession, Depends(get_async_db)],
+    current_user: Annotated[User, Depends(get_current_active_user)],
+    status_filter: Annotated[
+        str,
+        Query(
+            alias="status",
+            description="Filter by blog status: 'all', 'draft', 'published', 'archived', 'scheduled'",
+            pattern="^(all|draft|published|archived|scheduled)$",
+        ),
+    ] = "draft",
 ) -> list[BlogListOut]:
     """
     Get current user's blogs filtered by status.
@@ -821,9 +805,8 @@ async def get_dashboard_blogs(
         raise
     
     except SQLAlchemyError as e:
-        logger.error(
+        logger.exception(
             "Database error during dashboard query",
-            exc_info=True,
             extra={"user_hash": user_hash, "status_filter": status_filter},
         )
         raise HTTPException(
@@ -832,38 +815,40 @@ async def get_dashboard_blogs(
         ) from e
     
     except Exception as e:
-        logger.error(
+        logger.exception(
             "Unexpected error during dashboard query",
-            exc_info=True,
             extra={"user_hash": user_hash, "status_filter": status_filter},
         )
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="Unexpected error occurred",
+            detail=UNEXPECTED_ERROR,
         ) from e
 
 @router.get(
     "/dashboard/advanced",
-    response_model=list[BlogListOut],
     status_code=status.HTTP_200_OK,
     summary="Advanced dashboard with detailed sorting",
     description="Dashboard with advanced sorting options",
 )
 async def get_dashboard_blogs_advanced(
-    status_filter: str = Query(
-        "all",
-        alias="status",
-        description="Filter: 'all', 'draft', 'published', 'archived', 'scheduled'",
-        regex="^(all|draft|published|archived|scheduled)$",
-    ),
-    sort_by: str = Query(
-        "smart",
-        alias="sort",
-        description="Sort strategy: 'smart', 'recent', 'views', 'reading_time'",
-        regex="^(smart|recent|views|reading_time)$",
-    ),
-    db: Annotated[AsyncSession, Depends(get_async_db)] = None,
-    current_user: Annotated[User, Depends(get_current_active_user)] = None,
+    db: Annotated[AsyncSession, Depends(get_async_db)],
+    current_user: Annotated[User, Depends(get_current_active_user)],
+    status_filter: Annotated[
+        str,
+        Query(
+            alias="status",
+            description="Filter: 'all', 'draft', 'published', 'archived', 'scheduled'",
+            pattern="^(all|draft|published|archived|scheduled)$",
+        ),
+    ] = "all",
+    sort_by: Annotated[
+        str,
+        Query(
+            alias="sort",
+            description="Sort strategy: 'smart', 'recent', 'views', 'reading_time'",
+            pattern="^(smart|recent|views|reading_time)$",
+        ),
+    ] = "smart",
 ) -> list[BlogListOut]:
     """
     Advanced dashboard with multiple sorting options.
@@ -959,15 +944,14 @@ async def get_dashboard_blogs_advanced(
         except asyncio.TimeoutError:
             raise HTTPException(
                 status_code=status.HTTP_504_GATEWAY_TIMEOUT,
-                detail=f"Query timed out. Please try again.",
+                detail="Query timed out. Please try again.",
             )
     
     except HTTPException:
         raise
     except Exception as e:
-        logger.error(
+        logger.exception(
             "Advanced dashboard query error",
-            exc_info=True,
             extra={"user_hash": user_hash},
         )
         raise HTTPException(
@@ -977,18 +961,17 @@ async def get_dashboard_blogs_advanced(
 
 @router.get(
     "/{blog_id}",
-    response_model=BlogOut,
     status_code=status.HTTP_200_OK,
     summary="Get a blog post by ID",
     description="Retrieve a single blog post with author details.",
     responses={
         200: {"description": "Blog retrieved"},
-        404: {"description": "Blog not found"},
+        404: {"description": BLOG_NOT_FOUND},
     },
 )
 async def get_blog(
     blog_id: int,
-    db: Annotated[AsyncSession, Depends(get_async_db)] = None,
+    db: Annotated[AsyncSession, Depends(get_async_db)],
 ) -> BlogOut:
     """
     Retrieve a blog post by ID.
@@ -1018,9 +1001,8 @@ async def get_blog(
         raise
 
     except SQLAlchemyError as e:
-        logger.error(
+        logger.exception(
             "Database error during blog retrieval",
-            exc_info=True,
             extra={"blog_id": blog_id},
         )
         raise HTTPException(
@@ -1029,34 +1011,32 @@ async def get_blog(
         ) from e
 
     except Exception as e:
-        logger.error(
+        logger.exception(
             "Unexpected error during blog retrieval",
-            exc_info=True,
             extra={"blog_id": blog_id},
         )
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="Unexpected error occurred",
+            detail=UNEXPECTED_ERROR,
         ) from e
 
 @router.put(
     "/{blog_id}",
-    response_model=BlogOut,
     summary="Update a blog post",
     description="Update a blog post. Only the author can update.",
     responses={
         200: {"description": "Blog updated"},
         400: {"description": "Invalid update data"},
         403: {"description": "Not authorized"},
-        404: {"description": "Blog not found"},
+        404: {"description": BLOG_NOT_FOUND},
         409: {"description": "Slug conflict"},
     },
 )
 async def update_blog(
     blog_id: int,
     blog_update: BlogUpdate,
-    db: Annotated[AsyncSession, Depends(get_async_db)] = None,
-    current_user: Annotated[User, Depends(get_current_active_user)] = None,
+    db: Annotated[AsyncSession, Depends(get_async_db)],
+    current_user: Annotated[User, Depends(get_current_active_user)],
 ) -> BlogOut:
     """
     Update a blog post with optional SEO fields.
@@ -1176,9 +1156,8 @@ async def update_blog(
         ) from e
 
     except SQLAlchemyError as e:
-        logger.error(
+        logger.exception(
             "Database error during blog update",
-            exc_info=True,
             extra={"blog_id": blog_id, "user_hash": user_hash},
         )
         raise HTTPException(
@@ -1187,14 +1166,13 @@ async def update_blog(
         ) from e
 
     except Exception as e:
-        logger.error(
+        logger.exception(
             "Unexpected error during blog update",
-            exc_info=True,
             extra={"blog_id": blog_id, "user_hash": user_hash},
         )
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="Unexpected error occurred",
+            detail=UNEXPECTED_ERROR,
         ) from e
 
 @router.delete(
@@ -1205,13 +1183,13 @@ async def update_blog(
     responses={
         204: {"description": "Blog deleted"},
         403: {"description": "Not authorized"},
-        404: {"description": "Blog not found"},
+        404: {"description": BLOG_NOT_FOUND},
     },
 )
 async def delete_blog(
     blog_id: int,
-    db: Annotated[AsyncSession, Depends(get_async_db)] = None,
-    current_user: Annotated[User, Depends(get_current_active_user)] = None,
+    db: Annotated[AsyncSession, Depends(get_async_db)],
+    current_user: Annotated[User, Depends(get_current_active_user)],
 ) -> None:
     """
     Delete a blog post.
@@ -1260,9 +1238,8 @@ async def delete_blog(
         raise
 
     except SQLAlchemyError as e:
-        logger.error(
+        logger.exception(
             "Database error during blog deletion",
-            exc_info=True,
             extra={"blog_id": blog_id, "user_hash": user_hash},
         )
         raise HTTPException(
@@ -1271,13 +1248,12 @@ async def delete_blog(
         ) from e
 
     except Exception as e:
-        logger.error(
+        logger.exception(
             "Unexpected error during blog deletion",
-            exc_info=True,
             extra={"blog_id": blog_id, "user_hash": user_hash},
         )
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="Unexpected error occurred",
+            detail=UNEXPECTED_ERROR,
         ) from e
     

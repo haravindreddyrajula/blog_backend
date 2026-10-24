@@ -22,7 +22,7 @@ import logging
 import io
 import os
 from pathlib import Path
-from typing import Optional
+from typing import Optional, Annotated
 from uuid import uuid4
 
 import aiofiles
@@ -75,7 +75,7 @@ class ImageUploadResponse(BaseModel):
     size_bytes: int
     
     class Config:
-        schema_extra = {
+        json_schema_extra = {
             "example": {
                 "url": "/static/uploads/550e8400-e29b-41d4-a716-446655440000.jpg",
                 "filename": "550e8400-e29b-41d4-a716-446655440000.jpg",
@@ -142,7 +142,7 @@ def _verify_file_signature(data: bytes) -> Optional[str]:
     return None
 
 
-async def _validate_image_dimensions(file_data: bytes) -> None:
+def _validate_image_dimensions(file_data: bytes) -> None:
     """
     Validate image dimensions are within acceptable range.
     Prevents DOS via extremely large images.
@@ -190,13 +190,12 @@ def _sanitize_filename(original_filename: str, detected_format: str) -> str:
 
 @router.post(
     "/upload",
-    response_model=ImageUploadResponse,
     status_code=status.HTTP_201_CREATED,
     summary="Upload an image",
     description="Upload an image file (JPG, PNG, GIF, WebP). Max 5MB."
 )
 async def upload_image(
-    file: UploadFile = File(..., description="Image file to upload")
+    file: Annotated[UploadFile, File(description="Image file to upload")]
 ) -> ImageUploadResponse:
     """
     Upload an image with comprehensive security validation.
@@ -239,7 +238,7 @@ async def upload_image(
         # 2. Check file size
         if file.size and file.size > MAX_FILE_SIZE_BYTES:
             logger.warning(
-                f"File size exceeded",
+                "File size exceeded",
                 extra={
                     "filename": original_filename,
                     "size": file.size,
@@ -266,7 +265,7 @@ async def upload_image(
         detected_format = _verify_file_signature(file_content)
         if not detected_format:
             logger.warning(
-                f"Invalid file signature",
+                "Invalid file signature",
                 extra={"filename": original_filename, "claimed_ext": Path(original_filename).suffix}
             )
             raise HTTPException(
@@ -277,7 +276,7 @@ async def upload_image(
         # 5. Validate MIME type
         if file.content_type and file.content_type not in ALLOWED_MIMETYPES:
             logger.warning(
-                f"Invalid MIME type",
+                "Invalid MIME type",
                 extra={"filename": original_filename, "mime_type": file.content_type}
             )
             raise HTTPException(
@@ -286,7 +285,7 @@ async def upload_image(
             )
         
         # 6. Validate image dimensions
-        await _validate_image_dimensions(file_content)
+        _validate_image_dimensions(file_content)
         
         # ====================================================================
         # STORAGE PHASE
@@ -308,7 +307,7 @@ async def upload_image(
             temp_location.rename(file_location)
             
             logger.info(
-                f"Image uploaded successfully",
+                "Image uploaded successfully",
                 extra={
                     "original_filename": original_filename,
                     "safe_filename": safe_filename,
@@ -322,10 +321,9 @@ async def upload_image(
             if temp_location.exists():
                 temp_location.unlink()
             
-            logger.error(
-                f"Failed to write image file",
-                extra={"filename": safe_filename, "error": str(e)},
-                exc_info=True
+            logger.exception(
+                "Failed to write image file",
+                extra={"filename": safe_filename, "error": str(e)}
             )
             raise HTTPException(
                 status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
@@ -350,10 +348,9 @@ async def upload_image(
     
     except Exception as e:
         # Catch unexpected errors - log but don't expose details
-        logger.error(
-            f"Unexpected error during image upload",
+        logger.exception(
+            "Unexpected error during image upload",
             extra={"filename": original_filename},
-            exc_info=True
         )
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,

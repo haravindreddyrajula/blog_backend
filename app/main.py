@@ -28,15 +28,17 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Annotated
 
-from fastapi import Depends, FastAPI, HTTPException, status
+from fastapi import Depends, FastAPI, HTTPException, Request, status
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.gzip import GZipMiddleware
 from fastapi.staticfiles import StaticFiles
 from sqlalchemy import text
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncSession
+from starlette.responses import JSONResponse
 
 from app.core.config import settings
+from app.core.constants import UNEXPECTED_ERROR
 from app.core.database import Base, engine, dispose_engine, check_database_connection
 from app.core.deps import get_async_db
 from app.routes import auth, blog, comment, health
@@ -69,7 +71,7 @@ MIN_UPLOAD_DIR_PERMISSIONS = 0o755
 # ============================================================================
 
 
-async def _verify_upload_directory() -> None:
+def _verify_upload_directory() -> None:
     """
     Verify upload directory exists and is writable.
 
@@ -154,14 +156,11 @@ async def _initialize_database_schema() -> None:
         )
 
     except Exception as e:
-        logger.error(
+        logger.exception(
             "Failed to initialize database schema",
-            exc_info=True,
             extra={"environment": settings.ENVIRONMENT},
         )
-        raise RuntimeError(
-            "Database schema initialization failed."
-        ) from e
+        raise RuntimeError("Database schema initialization failed.") from e
 
 
 # ============================================================================
@@ -198,7 +197,7 @@ async def lifespan(app: FastAPI):
     try:
         # 1. Verify upload directory is writable
         logger.info("Verifying upload directory...")
-        await _verify_upload_directory()
+        _verify_upload_directory()
 
         # 2. Verify database is accessible
         logger.info("Verifying database connection...")
@@ -238,9 +237,8 @@ async def lifespan(app: FastAPI):
         logger.info("Application shutdown completed successfully")
 
     except Exception as shutdown_error:
-        logger.error(
+        logger.exception(
             "Error during shutdown",
-            exc_info=True,
             extra={"error_type": type(shutdown_error).__name__},
         )
 
@@ -263,6 +261,9 @@ app = FastAPI(
 # ============================================================================
 # MIDDLEWARE STACK
 # ============================================================================
+# Compression Middleware - compress responses over 1KB
+# noinspection PyTypeChecker
+app.add_middleware(GZipMiddleware, minimum_size=1000)
 
 # CORS Middleware - restrict origins per environment
 # noinspection PyTypeChecker
@@ -273,10 +274,6 @@ app.add_middleware(
     allow_methods=settings.CORS_ALLOW_METHODS,
     allow_headers=settings.CORS_ALLOW_HEADERS,
 )
-
-# Compression Middleware - compress responses over 1KB
-# noinspection PyTypeChecker
-app.add_middleware(GZipMiddleware, minimum_size=1000)
 
 # ============================================================================
 # STATIC FILES
@@ -400,21 +397,15 @@ async def health_check(
             "environment": settings.ENVIRONMENT,
         }
 
-    except SQLAlchemyError as e:
-        logger.error(
-            "Health check failed - database error",
-            exc_info=True,
-        )
+    except SQLAlchemyError:
+        logger.exception("Health check failed - database error",)
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Database connection failed",
         ) from e
 
     except Exception as e:
-        logger.error(
-            "Health check failed - unexpected error",
-            exc_info=True,
-        )
+        logger.exception("Health check failed - unexpected error")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Health check failed",
@@ -445,6 +436,12 @@ async def root() -> dict:
         "docs": "/docs" if not settings.is_production else None,
         "health": "/health",
     }
+
+@app.exception_handler(SQLAlchemyError)
+async def db_error_handler(request: Request, exc: SQLAlchemyError) -> JSONResponse:
+    logger.error("Database error", extra={"path": request.url.path}, exc_info=exc)
+    return JSONResponse(status_code=500, content={"detail": UNEXPECTED_ERROR})
+
 
 
 # ============================================================================
